@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         VoiceWSS Contact Autofill
 // @namespace    http://tampermonkey.net/
-// @version      3.0
+// @version      3.1
 // @description  Extract names and phone numbers from WebSelfStorage reports and autofill on Google Voice
 // @author       You
 // @match        https://voice.google.com/*
@@ -9,12 +9,34 @@
 // @match        https://webselfstorage.com/Affiliate/*/Reports/ViewReport?reportID=*
 // @grant        GM_setValue
 // @grant        GM_getValue
+// @updateURL    https://raw.githubusercontent.com/33OPX/VoiceWSS-Contact-Autofill/main/Google%20Voice%20WSS.js
+// @downloadURL  https://raw.githubusercontent.com/33OPX/VoiceWSS-Contact-Autofill/main/Google%20Voice%20WSS.js
 // ==/UserScript==
 
-// Log to confirm script is running inside the IIFE
-console.log('VoiceWSS: Script loaded INSIDE IIFE');
 
 (function() {
+    // Preload default message templates on script load if missing
+    (function ensureDefaultTemplates() {
+        let stored = {};
+        try { stored = JSON.parse(GM_getValue('wss_msg_templates', '{}')); } catch (e) { stored = {}; }
+        if (!stored || Object.keys(stored).length === 0) {
+            const defaultTemplates = {
+                stdP1: 'This is <employeename> from the U-Haul. I’m reaching out because I really want to help you reclaim your belongings, and you have options. The next step is your unit being listed for auction, and I REALLY don’t want that to happen. What can I do to help? Are you interested in your belongings?',
+                stdP2: 'Hi <firstname>, this is <employeename> from U-Haul. Just checking in to see if you need anything or have questions about your storage unit.',
+                stdA1: 'Hey <altfirstname>, my name is <employeename> and I’m the Storage Manager for U-Haul in this area. I’m reaching out because <firstname> has listed you as their emergency contact for their storage unit. We really need to get in contact with them regarding their belongings. Do you have a good number for us to get ahold of them at? Thank you so much!',
+                stdA2: 'Hi <altfirstname>, this is <employeename> from U-Haul. Just checking in to see if you need anything or have questions about <firstname>\'s storage unit.',
+                aucP1: 'Hey <firstname>, my name is <employeename> and I’m the Storage Manager for U-Haul in this area. We are desperately trying to get in contact with our customer regarding their belongings. Is this by chance your storage unit? Please let me know either way and thank you so much for your help!',
+                aucP2: 'Hi <firstname>, this is <employeename> from U-Haul. Just checking in to see if you need anything or have questions about your storage unit.',
+                aucA1: 'Hey <altfirstname>, my name is <employeename> and I’m the Storage Manager for U-Haul in this area. I’m reaching out because <firstname> has listed you as their emergency contact for their storage unit. We really need to get in contact with them regarding their belongings. Do you have a good number for us to get ahold of them at? Thank you so much!',
+                aucA2: 'Hi <altfirstname>, this is <employeename> from U-Haul. Just checking in to see if you need anything or have questions about <firstname>\'s storage unit.',
+                standard_daysMin: 29,
+                standard_daysMax: 59,
+                auction_daysMin: 60,
+                auction_daysMax: 999
+            };
+            GM_setValue('wss_msg_templates', JSON.stringify(defaultTemplates));
+        }
+    })();
     'use strict';
 
     // Utility: Extract contacts from report page
@@ -57,6 +79,12 @@ console.log('VoiceWSS: Script loaded INSIDE IIFE');
                     let nameMatch = rowText.match(/Customer:\s*([A-Z\s]+,[A-Z\s]+)/);
                     if (nameMatch) {
                         let nameText = nameMatch[1].trim();
+                        // Remove all AUTOPAY and N, and clean up tabs/whitespace
+                        nameText = nameText.replace(/\t+/g, ' ')
+                                         .replace(/\bAUTOPAY\b/gi, '')
+                                         .replace(/\bN\b/gi, '')
+                                         .replace(/\s+/g, ' ')
+                                         .trim();
                         // Look ahead for Home phone
                         let phone = null;
                         for (let j = 1; j <= 3 && i + j < rows.length; j++) {
@@ -162,13 +190,65 @@ console.log('VoiceWSS: Script loaded INSIDE IIFE');
     container.style.borderRadius = '12px';
     container.style.border = '1px solid #0077cc';
     container.style.zIndex = '9999';
-    container.style.position = 'relative';
+    container.style.position = 'absolute';
+    container.style.left = '32px';
+    container.style.top = '32px';
     container.style.maxWidth = '295px';
     container.style.width = '295px';
     container.style.boxSizing = 'border-box';
     container.style.textAlign = 'center';
     container.style.display = 'block';
     container.style.boxShadow = '0 2px 12px rgba(0,64,128,0.10)';
+
+    // Load saved position from Tampermonkey storage
+    let savedPos = {};
+    try { savedPos = JSON.parse(GM_getValue('wss_dropdown_pos', '{}')); } catch (e) { savedPos = {}; }
+    if (typeof savedPos.left === 'number' && typeof savedPos.top === 'number') {
+        container.style.left = savedPos.left + 'px';
+        container.style.top = savedPos.top + 'px';
+    }
+
+    // Add draggable handle (4-way arrow)
+    let dragHandle = document.createElement('div');
+    dragHandle.textContent = '✥'; // Four-pointed star symbol
+    dragHandle.title = 'Drag to move';
+    dragHandle.style.position = 'absolute';
+    dragHandle.style.left = '6px';
+    dragHandle.style.top = '6px';
+    dragHandle.style.cursor = 'grab';
+    dragHandle.style.fontSize = '22px';
+    dragHandle.style.userSelect = 'none';
+    dragHandle.style.zIndex = '10001';
+    dragHandle.style.background = 'transparent';
+    dragHandle.style.color = '#0077cc';
+    dragHandle.style.padding = '0 2px';
+    dragHandle.style.borderRadius = '6px';
+    dragHandle.onmousedown = function(e) {
+        e.preventDefault();
+        let startX = e.clientX;
+        let startY = e.clientY;
+        let origLeft = parseInt(container.style.left, 10);
+        let origTop = parseInt(container.style.top, 10);
+        dragHandle.style.cursor = 'grabbing';
+        function onMouseMove(ev) {
+            let dx = ev.clientX - startX;
+            let dy = ev.clientY - startY;
+            let newLeft = origLeft + dx;
+            let newTop = origTop + dy;
+            container.style.left = newLeft + 'px';
+            container.style.top = newTop + 'px';
+            // Save position live as you drag
+            GM_setValue('wss_dropdown_pos', JSON.stringify({ left: newLeft, top: newTop }));
+        }
+        function onMouseUp() {
+            dragHandle.style.cursor = 'grab';
+            document.removeEventListener('mousemove', onMouseMove);
+            document.removeEventListener('mouseup', onMouseUp);
+        }
+        document.addEventListener('mousemove', onMouseMove);
+        document.addEventListener('mouseup', onMouseUp);
+    };
+    container.appendChild(dragHandle);
     // Position left for Google Voice, centered for Google Messages
     if (window.location.hostname.includes('voice.google.com')) {
         container.style.margin = '16px 0 0 16px';
@@ -180,6 +260,30 @@ console.log('VoiceWSS: Script loaded INSIDE IIFE');
 
         // If on Google Messages, wrap in a flexbox container to prevent stretching
         let wrapper = null;
+        // --- Refresh Button ---
+        let refreshBtn = document.createElement('button');
+    refreshBtn.textContent = '🔄';
+        refreshBtn.style.marginLeft = '8px';
+        refreshBtn.style.marginRight = '0px';
+        refreshBtn.style.padding = '2px 8px';
+        refreshBtn.style.borderRadius = '5px';
+    refreshBtn.style.border = 'none';
+        refreshBtn.style.background = 'linear-gradient(90deg, #e6f2ff 0%, #f8faff 100%)';
+        refreshBtn.style.cursor = 'pointer';
+        refreshBtn.style.fontWeight = '500';
+    refreshBtn.style.fontSize = '20px';
+        refreshBtn.style.boxShadow = '0 1px 4px rgba(0,0,0,0.07)';
+        refreshBtn.style.whiteSpace = 'nowrap';
+        refreshBtn.style.lineHeight = '1.2';
+        refreshBtn.style.height = 'auto';
+        refreshBtn.onmouseover = function() { refreshBtn.style.background = '#d0e7ff'; };
+        refreshBtn.onmouseout = function() { refreshBtn.style.background = 'linear-gradient(90deg, #e6f2ff 0%, #f8faff 100%)'; };
+        refreshBtn.onclick = function() {
+            // Remove the dropdown container and re-inject everything
+            let dd = document.querySelector('.wss-contact-dropdown');
+            if (dd && dd.parentNode) dd.parentNode.removeChild(dd);
+            injectDropdown();
+        };
         // --- SMS Editor UI ---
         // Create SMS Editor button
         let smsEditorBtn = document.createElement('button');
@@ -253,9 +357,34 @@ console.log('VoiceWSS: Script loaded INSIDE IIFE');
         function loadTemplates() {
             let stored = {};
             try { stored = JSON.parse(GM_getValue('wss_msg_templates', '{}')); } catch (e) { stored = {}; }
+            // If no templates exist, preload defaults
+            if (!stored || Object.keys(stored).length === 0) {
+                let preload = {
+                    stdP1: defaultTemplates.main.text,
+                    stdP2: defaultTemplates.secondary.text,
+                    stdA1: defaultTemplates.alt.text,
+                    stdA2: defaultTemplates.secondary.text,
+                    aucP1: defaultTemplates.auction.text,
+                    aucP2: defaultTemplates.secondary.text,
+                    aucA1: defaultTemplates.alt.text,
+                    aucA2: defaultTemplates.secondary.text,
+                    standard_daysMin: defaultTemplates.main.daysMin,
+                    standard_daysMax: defaultTemplates.main.daysMax,
+                    auction_daysMin: defaultTemplates.auction.daysMin,
+                    auction_daysMax: defaultTemplates.auction.daysMax
+                };
+                GM_setValue('wss_msg_templates', JSON.stringify(preload));
+                stored = preload;
+            }
             let templates = {};
             for (let k in defaultTemplates) {
-                templates[k] = Object.assign({}, defaultTemplates[k], stored[k] || {});
+                // Use correct mapping for UI
+                let key = '';
+                if (k === 'main') key = 'stdP1';
+                else if (k === 'secondary') key = 'stdP2';
+                else if (k === 'alt') key = 'stdA1';
+                else if (k === 'auction') key = 'aucP1';
+                templates[k] = Object.assign({}, defaultTemplates[k], stored[key] ? { text: stored[key] } : {});
             }
             return templates;
         }
@@ -705,8 +834,8 @@ console.log('VoiceWSS: Script loaded INSIDE IIFE');
                 alert('Error showing SMS Editor panel: ' + e.message);
             }
         };
-        // Add button to dropdown container
-        container.appendChild(smsEditorBtn);
+    // Add SMS Editor button to dropdown container
+    container.appendChild(smsEditorBtn);
         // --- End SMS Editor UI ---
         if (window.location.hostname.includes('messages.google.com')) {
             wrapper = document.createElement('div');
@@ -728,35 +857,43 @@ console.log('VoiceWSS: Script loaded INSIDE IIFE');
 
         // --- Three-row layout ---
         // Row 1: Your Name
-        let row1 = document.createElement('div');
-        row1.style.display = 'flex';
-        row1.style.justifyContent = 'center';
-        row1.style.alignItems = 'center';
-        row1.style.marginBottom = '10px';
-        let empLabel = document.createElement('label');
-        empLabel.textContent = 'Your Name: ';
-        empLabel.style.marginRight = '6px';
-        empLabel.style.fontWeight = 'bold';
-        empLabel.style.color = '#0055a5';
-        empLabel.style.fontSize = '14px';
-        let empInput = document.createElement('input');
-        empInput.type = 'text';
-        empInput.placeholder = 'Your name';
-        empInput.style.marginRight = '0px';
-        empInput.style.padding = '4px 10px';
-        empInput.style.borderRadius = '7px';
-        empInput.style.border = '1px solid #0077cc';
-        empInput.style.width = '120px';
-        empInput.style.background = 'linear-gradient(90deg, #e6f2ff 0%, #f8faff 100%)';
-        empInput.style.fontSize = '14px';
-        empInput.style.fontWeight = '500';
-        empInput.style.boxShadow = '0 1px 4px rgba(0,0,0,0.08)';
-        empInput.style.transition = 'box-shadow 0.2s';
-        empInput.onfocus = function() { empInput.style.boxShadow = '0 2px 8px rgba(0,0,0,0.16)'; };
-        empInput.onblur = function() { empInput.style.boxShadow = '0 1px 4px rgba(0,0,0,0.08)'; };
-        row1.appendChild(empLabel);
-        row1.appendChild(empInput);
-        container.appendChild(row1);
+    let row1 = document.createElement('div');
+    row1.style.display = 'flex';
+    row1.style.justifyContent = 'center';
+    row1.style.alignItems = 'center';
+    row1.style.gap = '14px';
+    row1.style.marginBottom = '10px';
+    row1.style.width = '100%';
+
+    // Move icon (dragHandle), name input, refresh button
+    dragHandle.style.position = 'static';
+    dragHandle.style.margin = '0 0 0 0';
+    dragHandle.style.order = '0';
+
+    let empInput = document.createElement('input');
+    empInput.type = 'text';
+    empInput.placeholder = 'Enter Your Name';
+    empInput.style.margin = '0';
+    empInput.style.padding = '4px 10px';
+    empInput.style.borderRadius = '7px';
+    empInput.style.border = '1px solid #0077cc';
+    empInput.style.width = '160px';
+    empInput.style.background = 'linear-gradient(90deg, #e6f2ff 0%, #f8faff 100%)';
+    empInput.style.fontSize = '14px';
+    empInput.style.fontWeight = '500';
+    empInput.style.boxShadow = '0 1px 4px rgba(0,0,0,0.08)';
+    empInput.style.transition = 'box-shadow 0.2s';
+    empInput.onfocus = function() { empInput.style.boxShadow = '0 2px 8px rgba(0,0,0,0.16)'; };
+    empInput.onblur = function() { empInput.style.boxShadow = '0 1px 4px rgba(0,0,0,0.08)'; };
+    empInput.style.order = '1';
+
+    refreshBtn.style.order = '2';
+    refreshBtn.style.margin = '0';
+
+    row1.appendChild(dragHandle);
+    row1.appendChild(empInput);
+    row1.appendChild(refreshBtn);
+    container.appendChild(row1);
         // restore previously saved employee name (persist across refresh)
         try {
             const savedEmp = GM_getValue('wss_emp_name', '');
