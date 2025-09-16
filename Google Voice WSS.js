@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         VoiceWSS Contact Autofill
 // @namespace    http://tampermonkey.net/
-// @version      3.3
+// @version      3.4
 // @description  Extract names and phone numbers from WebSelfStorage reports and autofill on Google Voice
 // @author       You
 // @match        https://voice.google.com/*
@@ -206,6 +206,21 @@
     if (typeof savedPos.left === 'number' && typeof savedPos.top === 'number') {
         container.style.left = savedPos.left + 'px';
         container.style.top = savedPos.top + 'px';
+        // Failsafe: If box is off screen on load, center it
+        setTimeout(function() {
+            const rect = container.getBoundingClientRect();
+            const boxArea = rect.width * rect.height;
+            let visibleWidth = Math.max(0, Math.min(rect.right, window.innerWidth) - Math.max(rect.left, 0));
+            let visibleHeight = Math.max(0, Math.min(rect.bottom, window.innerHeight) - Math.max(rect.top, 0));
+            let visibleArea = visibleWidth * visibleHeight;
+            if (visibleArea < boxArea * 0.5) {
+                const centerLeft = (window.innerWidth - container.offsetWidth) / 2;
+                const centerTop = (window.innerHeight - container.offsetHeight) / 2;
+                container.style.left = centerLeft + 'px';
+                container.style.top = centerTop + 'px';
+                GM_setValue('wss_dropdown_pos', JSON.stringify({ left: centerLeft, top: centerTop }));
+            }
+        }, 100);
     }
 
     // Add draggable handle (4-way arrow)
@@ -235,6 +250,11 @@
             let dy = ev.clientY - startY;
             let newLeft = origLeft + dx;
             let newTop = origTop + dy;
+            // Prevent box from going off top or bottom of the viewport
+            const minTop = 0;
+            const maxTop = window.innerHeight - container.offsetHeight;
+            if (newTop < minTop) newTop = minTop;
+            if (newTop > maxTop) newTop = maxTop;
             container.style.left = newLeft + 'px';
             container.style.top = newTop + 'px';
             // Save position live as you drag
@@ -244,6 +264,20 @@
             dragHandle.style.cursor = 'grab';
             document.removeEventListener('mousemove', onMouseMove);
             document.removeEventListener('mouseup', onMouseUp);
+            // Check if 50% or more of the box is off screen, then center it
+            const rect = container.getBoundingClientRect();
+            const boxArea = rect.width * rect.height;
+            let visibleWidth = Math.max(0, Math.min(rect.right, window.innerWidth) - Math.max(rect.left, 0));
+            let visibleHeight = Math.max(0, Math.min(rect.bottom, window.innerHeight) - Math.max(rect.top, 0));
+            let visibleArea = visibleWidth * visibleHeight;
+            if (visibleArea < boxArea * 0.5) {
+                // Move to center
+                const centerLeft = (window.innerWidth - container.offsetWidth) / 2;
+                const centerTop = (window.innerHeight - container.offsetHeight) / 2;
+                container.style.left = centerLeft + 'px';
+                container.style.top = centerTop + 'px';
+                GM_setValue('wss_dropdown_pos', JSON.stringify({ left: centerLeft, top: centerTop }));
+            }
         }
         document.addEventListener('mousemove', onMouseMove);
         document.addEventListener('mouseup', onMouseUp);
