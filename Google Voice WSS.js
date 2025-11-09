@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         VoiceWSS Contact Autofill
 // @namespace    http://tampermonkey.net/
-// @version      3.9
+// @version      4.0
 // @description  Extract names and phone numbers from WebSelfStorage reports and autofill on Google Voice
 // @author       You
 // @match        https://voice.google.com/*
@@ -54,22 +54,22 @@
             let lastMainContact = null;
             for (let i = 0; i < rows.length; i++) {
                 const rowText = rows[i].innerText.trim();
-
+                
                 // Debug: Log first 50 chars of each row to see what we're dealing with
                 if (rowText.length > 0) {
                     console.log('VoiceWSS: Row', i, 'preview:', rowText.substring(0, 50));
                 }
-
+                
                 // Find days late, balance due, and unit number from the main data row
                 // Try to match unit numbers - they might be in different formats
                 if (/^\d{6,}-\d{6,}/.test(rowText) || /^\d{6,}\s*-\s*\d{6,}/.test(rowText) || /^\d{6,}/.test(rowText)) {
                     let cols = rowText.split('\t');
                     console.log('VoiceWSS: Data row found:', rowText);
                     console.log('VoiceWSS: Columns:', cols);
-
+                    
                     // Try to get unit number (first column)
                     unitNumber = cols[0].trim();
-
+                    
                     // Try to find days late - skip the first 3 columns (unit, room, date)
                     // Days late should be a pure number in column 4 or later
                     daysLate = null;
@@ -86,7 +86,7 @@
                             }
                         }
                     }
-
+                    
                     // Try to find balance due - look for dollar amounts
                     balanceDue = null;
                     for (let colIdx = 5; colIdx < cols.length; colIdx++) {
@@ -103,7 +103,7 @@
                             }
                         }
                     }
-
+                    
                     console.log('VoiceWSS: Extracted - Unit:', unitNumber, 'Days Late:', daysLate, 'Balance:', balanceDue);
                 }
                 // Main customer
@@ -211,7 +211,7 @@
             '875080': { name: 'U-Haul Moving & Storage of Wentzville', city: 'Wentzville', state: 'MO', shortName: 'Wentzville' },
             '875086': { name: 'U-Haul Moving & Storage at Mexico Rd', city: 'Saint Peters', state: 'MO', shortName: 'Mexico Rd' }
         };
-
+        
         const h4Elements = document.querySelectorAll('h4');
         for (let h4 of h4Elements) {
             const text = h4.textContent.trim();
@@ -251,7 +251,7 @@
             GM_setValue('wss_location_info', JSON.stringify(locationInfo));
             console.log('VoiceWSS: Saved location info:', locationInfo);
         }
-
+        
         let contacts = extractContacts();
         // Always clear and replace previous list
         saveContacts([]); // Clear previous list
@@ -522,7 +522,9 @@
         const placeholders = [
             { label: '<employeename>', desc: 'Employee Name' },
             { label: '<firstname>', desc: 'Customer First Name' },
+            { label: '<lastname>', desc: 'Customer Last Name' },
             { label: '<altfirstname>', desc: 'Alternate Contact First Name' },
+            { label: '<altlastname>', desc: 'Alternate Contact Last Name' },
             { label: '<location>', desc: 'U-Haul Location (e.g., East Alton)' }
         ];
 
@@ -1200,6 +1202,25 @@
             }
             return '';
         }
+        function getLastName(fullName) {
+            // Names are in format: "LASTNAME ,FIRSTNAME" or "LASTNAME-OTHERNAME ,FIRSTNAME"
+            let parts = fullName.split(',');
+            if (parts.length > 0) {
+                let lastName = parts[0].trim();
+                // Remove AUTOPAY and N markers
+                lastName = lastName.replace(/\bAUTOPAY\b/gi, '')
+                                   .replace(/\bN\b$/gi, '')
+                                   .replace(/\s+/g, ' ')
+                                   .trim();
+                if (lastName.length > 0) {
+                    // Capitalize properly (handle hyphenated names like WILLIAMS-MILLER)
+                    return lastName.split('-').map(part => 
+                        part.charAt(0).toUpperCase() + part.slice(1).toLowerCase()
+                    ).join('-');
+                }
+            }
+            return '';
+        }
         function getMessage(contact, empName) {
             let firstName = contact.name ? getFirstName(contact.name) : '';
             let daysLate = contact.daysLate;
@@ -1211,6 +1232,9 @@
             function fillPlaceholders(str) {
                 let altFirst = contact.name ? getFirstName(contact.name) : '';
                 let mainFirst = contact.mainName ? getFirstName(contact.mainName) : '';
+                let lastName = contact.name ? getLastName(contact.name) : '';
+                let altLastName = contact.name ? getLastName(contact.name) : '';
+                let mainLastName = contact.mainName ? getLastName(contact.mainName) : '';
                 // Load location info
                 let locationInfo = null;
                 try {
@@ -1221,8 +1245,11 @@
                 let locationName = locationInfo ? locationInfo.shortName : 'this area';
                 return str.replace(/<employeename>/g, empName)
                           .replace(/<firstname>/g, firstName)
+                          .replace(/<lastname>/g, lastName)
                           .replace(/<altfirstname>/g, altFirst)
+                          .replace(/<altlastname>/g, altLastName)
                           .replace(/<mainfirstname>/g, mainFirst)
+                          .replace(/<mainlastname>/g, mainLastName)
                           .replace(/<location>/g, locationName);
             }
             // Use getTemplateKey logic for both built-in and custom ranges
@@ -1340,15 +1367,22 @@
                 // <altfirstname>: always alternate contact's first name
                 let mainFirst = '';
                 let altFirst = '';
+                let mainLastName = '';
+                let altLastName = '';
                 if (contact.isAlternate) {
                     mainFirst = contact.mainName ? getFirstName(contact.mainName) : '';
                     altFirst = contact.name ? getFirstName(contact.name) : '';
+                    mainLastName = contact.mainName ? getLastName(contact.mainName) : '';
+                    altLastName = contact.name ? getLastName(contact.name) : '';
                 } else {
                     mainFirst = contact.name ? getFirstName(contact.name) : '';
+                    mainLastName = contact.name ? getLastName(contact.name) : '';
                     if (Array.isArray(contact.alternates) && contact.alternates.length > 0) {
                         altFirst = getFirstName(contact.alternates[0].name);
+                        altLastName = getLastName(contact.alternates[0].name);
                     } else {
                         altFirst = '';
+                        altLastName = '';
                     }
                 }
                 // Load location info
@@ -1361,8 +1395,11 @@
                 let locationName = locationInfo ? locationInfo.shortName : 'this area';
                 return str.replace(/<employeename>/g, empName)
                           .replace(/<firstname>/g, mainFirst)
+                          .replace(/<lastname>/g, mainLastName)
                           .replace(/<altfirstname>/g, altFirst)
+                          .replace(/<altlastname>/g, altLastName)
                           .replace(/<mainfirstname>/g, mainFirst)
+                          .replace(/<mainlastname>/g, mainLastName)
                           .replace(/<location>/g, locationName);
             }
             function getPopulatedMessage(contact, empName) {
