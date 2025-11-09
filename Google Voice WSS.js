@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         VoiceWSS Contact Autofill
 // @namespace    http://tampermonkey.net/
-// @version      3.4
+// @version      3.9
 // @description  Extract names and phone numbers from WebSelfStorage reports and autofill on Google Voice
 // @author       You
 // @match        https://voice.google.com/*
@@ -23,11 +23,11 @@
             const defaultTemplates = {
                 stdP1: 'This is <employeename> from the U-Haul. I’m reaching out because I really want to help you reclaim your belongings, and you have options. The next step is your unit being listed for auction, and I REALLY don’t want that to happen. What can I do to help? Are you interested in your belongings?',
                 stdP2: 'Hi <firstname>, this is <employeename> from U-Haul. Just checking in to see if you need anything or have questions about your storage unit.',
-                stdA1: 'Hey <altfirstname>, my name is <employeename> and I’m the Storage Manager for U-Haul in this area. I’m reaching out because <firstname> has listed you as their emergency contact for their storage unit. We really need to get in contact with them regarding their belongings. Do you have a good number for us to get ahold of them at? Thank you so much!',
+                stdA1: 'Hey <altfirstname>, my name is <employeename> and I’m the Storage Manager for U-Haul in <location>. I’m reaching out because <firstname> has listed you as their emergency contact for their storage unit. We really need to get in contact with them regarding their belongings. Do you have a good number for us to get ahold of them at? Thank you so much!',
                 stdA2: 'Hi <altfirstname>, this is <employeename> from U-Haul. Just checking in to see if you need anything or have questions about <firstname>\'s storage unit.',
-                aucP1: 'Hey <firstname>, my name is <employeename> and I’m the Storage Manager for U-Haul in this area. We are desperately trying to get in contact with our customer regarding their belongings. Is this by chance your storage unit? Please let me know either way and thank you so much for your help!',
+                aucP1: 'Hey <firstname>, my name is <employeename> and I’m the Storage Manager for U-Haul in <location>. We are desperately trying to get in contact with our customer regarding their belongings. Is this by chance your storage unit? Please let me know either way and thank you so much for your help!',
                 aucP2: 'Hi <firstname>, this is <employeename> from U-Haul. Just checking in to see if you need anything or have questions about your storage unit.',
-                aucA1: 'Hey <altfirstname>, my name is <employeename> and I’m the Storage Manager for U-Haul in this area. I’m reaching out because <firstname> has listed you as their emergency contact for their storage unit. We really need to get in contact with them regarding their belongings. Do you have a good number for us to get ahold of them at? Thank you so much!',
+                aucA1: 'Hey <altfirstname>, my name is <employeename> and I’m the Storage Manager for U-Haul in <location>. I’m reaching out because <firstname> has listed you as their emergency contact for their storage unit. We really need to get in contact with them regarding their belongings. Do you have a good number for us to get ahold of them at? Thank you so much!',
                 aucA2: 'Hi <altfirstname>, this is <employeename> from U-Haul. Just checking in to see if you need anything or have questions about <firstname>\'s storage unit.',
                 standard_daysMin: 29,
                 standard_daysMax: 59,
@@ -44,39 +44,72 @@
         let contacts = [];
         // Find all rows in the report table
         const tables = document.querySelectorAll('table.report');
+        console.log('VoiceWSS: Found', tables.length, 'report tables');
         tables.forEach(table => {
             const rows = Array.from(table.querySelectorAll('tr'));
+            console.log('VoiceWSS: Processing', rows.length, 'rows in table');
             let daysLate = null;
             let balanceDue = null;
             let unitNumber = null;
             let lastMainContact = null;
             for (let i = 0; i < rows.length; i++) {
                 const rowText = rows[i].innerText.trim();
+
+                // Debug: Log first 50 chars of each row to see what we're dealing with
+                if (rowText.length > 0) {
+                    console.log('VoiceWSS: Row', i, 'preview:', rowText.substring(0, 50));
+                }
+
                 // Find days late, balance due, and unit number from the main data row
-                if (/^\d{6,}-\d{6,}/.test(rowText)) {
+                // Try to match unit numbers - they might be in different formats
+                if (/^\d{6,}-\d{6,}/.test(rowText) || /^\d{6,}\s*-\s*\d{6,}/.test(rowText) || /^\d{6,}/.test(rowText)) {
                     let cols = rowText.split('\t');
-                    // Example columns: [unit, ?, ?, ?, daysLate, balanceDue, ...]
-                    if (cols.length >= 6) {
-                        // Try to get unit number (first column)
-                        unitNumber = cols[0].trim();
-                        // Try to get days late (5th column)
-                        if (/^\d+$/.test(cols[4].trim())) {
-                            daysLate = parseInt(cols[4].trim(), 10);
-                        } else {
-                            daysLate = null;
+                    console.log('VoiceWSS: Data row found:', rowText);
+                    console.log('VoiceWSS: Columns:', cols);
+
+                    // Try to get unit number (first column)
+                    unitNumber = cols[0].trim();
+
+                    // Try to find days late - skip the first 3 columns (unit, room, date)
+                    // Days late should be a pure number in column 4 or later
+                    daysLate = null;
+                    for (let colIdx = 3; colIdx < cols.length; colIdx++) {
+                        let colVal = cols[colIdx].trim();
+                        // Look for a column that's just digits (days late)
+                        // Should be reasonable (1-999 days typically)
+                        if (/^\d+$/.test(colVal) && colVal.length <= 3) {
+                            let numVal = parseInt(colVal, 10);
+                            if (numVal > 0 && numVal < 1000) {
+                                daysLate = numVal;
+                                console.log('VoiceWSS: Found daysLate:', daysLate, 'at column', colIdx);
+                                break;
+                            }
                         }
-                        // Try to get balance due (6th column)
-                        let bal = cols[5].replace(/[^\d\.\-]/g, '').trim();
-                        balanceDue = bal.length > 0 ? bal : null;
-                    } else {
-                        daysLate = null;
-                        balanceDue = null;
-                        unitNumber = null;
                     }
+
+                    // Try to find balance due - look for dollar amounts
+                    balanceDue = null;
+                    for (let colIdx = 5; colIdx < cols.length; colIdx++) {
+                        let colVal = cols[colIdx].trim();
+                        // Look for a column with dollar sign
+                        if (/^\$/.test(colVal)) {
+                            let bal = colVal.replace(/[^\d\.\-]/g, '').trim();
+                            let balNum = parseFloat(bal);
+                            // Look for a balance over $50 (skip monthly rate, look for total balance)
+                            if (bal.length > 0 && balNum >= 50) {
+                                balanceDue = bal;
+                                console.log('VoiceWSS: Found balanceDue:', balanceDue, 'at column', colIdx);
+                                break;
+                            }
+                        }
+                    }
+
+                    console.log('VoiceWSS: Extracted - Unit:', unitNumber, 'Days Late:', daysLate, 'Balance:', balanceDue);
                 }
                 // Main customer
                 if (/^Customer:/.test(rowText)) {
-                    let nameMatch = rowText.match(/Customer:\s*([A-Z\s]+,[A-Z\s]+)/);
+                    // Updated regex to handle hyphens, apostrophes, and other characters in names
+                    let nameMatch = rowText.match(/Customer:\s*([A-Z\s\-'\.]+,[A-Z\s\-'\.]+)/);
                     if (nameMatch) {
                         let nameText = nameMatch[1].trim();
                         // Remove all AUTOPAY and N, and clean up tabs/whitespace
@@ -113,7 +146,8 @@
                     let altName = null, altPhone = null;
                     for (let j = 1; j <= 3 && i + j < rows.length; j++) {
                         let altRow = rows[i + j].innerText.trim();
-                        let nameMatch = altRow.match(/^([A-Z\s]+,[A-Z\s]+)/);
+                        // Updated regex to handle hyphens, apostrophes, and other characters in names
+                        let nameMatch = altRow.match(/^([A-Z\s\-'\.]+,[A-Z\s\-'\.]+)/);
                         if (nameMatch) {
                             altName = nameMatch[1].trim();
                         }
@@ -158,8 +192,66 @@
         return parsed;
     }
 
+    // Utility: Extract location info from WSS page header
+    function extractLocationInfo() {
+        // Look for the h4 tag with format: "875067 | U-Haul Moving & Storage Of East Alton"
+        const locationMap = {
+            '875028': { name: 'U-Haul Moving & Storage of Florissant II', city: 'Florissant', state: 'MO', shortName: 'Florissant II' },
+            '875051': { name: 'U-Haul Moving & Storage of Saint Peters', city: 'Saint Peters', state: 'MO', shortName: 'Saint Peters' },
+            '875054': { name: 'U-Haul Moving & Storage of O\'Fallon', city: 'O\'Fallon', state: 'MO', shortName: 'O\'Fallon' },
+            '875066': { name: 'U-Haul Moving & Storage of Florissant', city: 'Florissant', state: 'MO', shortName: 'Florissant' },
+            '875067': { name: 'U-Haul Moving & Storage of East Alton', city: 'East Alton', state: 'IL', shortName: 'East Alton' },
+            '875071': { name: 'U-Haul Moving & Storage of Hazelwood', city: 'Hazelwood', state: 'MO', shortName: 'Hazelwood' },
+            '875072': { name: 'U-Haul Moving & Storage of Lake St Louis', city: 'O\'Fallon', state: 'MO', shortName: 'Lake St Louis' },
+            '875073': { name: 'U-Haul Moving & Storage at Hwy 367', city: 'Spanish Lake', state: 'MO', shortName: 'Hwy 367' },
+            '875075': { name: 'U-Haul Moving & Storage of Alton', city: 'Alton', state: 'IL', shortName: 'Alton' },
+            '875076': { name: 'U-Haul Moving & Storage at West Florissant', city: 'Florissant', state: 'MO', shortName: 'West Florissant' },
+            '875077': { name: 'U-Haul Self Storage of Spanish Lake', city: 'Spanish Lake', state: 'MO', shortName: 'Spanish Lake' },
+            '875078': { name: 'U-Haul Moving & Storage of O\'Fallon', city: 'O Fallon', state: 'IL', shortName: 'O\'Fallon IL' },
+            '875080': { name: 'U-Haul Moving & Storage of Wentzville', city: 'Wentzville', state: 'MO', shortName: 'Wentzville' },
+            '875086': { name: 'U-Haul Moving & Storage at Mexico Rd', city: 'Saint Peters', state: 'MO', shortName: 'Mexico Rd' }
+        };
+
+        const h4Elements = document.querySelectorAll('h4');
+        for (let h4 of h4Elements) {
+            const text = h4.textContent.trim();
+            const match = text.match(/^(\d{6})\s*\|\s*(.+)$/);
+            if (match) {
+                const locationCode = match[1];
+                const locationName = match[2].trim();
+                const locationData = locationMap[locationCode];
+                if (locationData) {
+                    return {
+                        code: locationCode,
+                        fullName: locationName,
+                        shortName: locationData.shortName,
+                        city: locationData.city,
+                        state: locationData.state
+                    };
+                } else {
+                    // Fallback if location not in map
+                    return {
+                        code: locationCode,
+                        fullName: locationName,
+                        shortName: locationName.replace(/U-Haul (Moving & Storage|Self Storage) (of|at) /i, ''),
+                        city: '',
+                        state: ''
+                    };
+                }
+            }
+        }
+        return null;
+    }
+
     // On WebSelfStorage report page: extract and save contacts
     if (window.location.hostname.includes('webselfstorage.com')) {
+        // Extract and save location info
+        let locationInfo = extractLocationInfo();
+        if (locationInfo) {
+            GM_setValue('wss_location_info', JSON.stringify(locationInfo));
+            console.log('VoiceWSS: Saved location info:', locationInfo);
+        }
+
         let contacts = extractContacts();
         // Always clear and replace previous list
         saveContacts([]); // Clear previous list
@@ -369,14 +461,14 @@
                 key: 'auction',
                 daysMin: 60,
                 daysMax: 999,
-                text: 'Hey <firstname>, my name is <employeename> and I’m the Storage Manager for U-Haul in this area. We are desperately trying to get in contact with our customer regarding their belongings. Is this by chance your storage unit? Please let me know either way and thank you so much for your help!'
+                text: 'Hey <firstname>, my name is <employeename> and I’m the Storage Manager for U-Haul in <location>. We are desperately trying to get in contact with our customer regarding their belongings. Is this by chance your storage unit? Please let me know either way and thank you so much for your help!'
             },
             alt: {
                 label: 'Alternate Contact',
                 key: 'alt',
                 daysMin: 0,
                 daysMax: 999,
-                text: 'Hey <altfirstname>, my name is <employeename> and I’m the Storage Manager for U-Haul in this area. I’m reaching out because <firstname> has listed you as their emergency contact for their storage unit. We really need to get in contact with them regarding their belongings. Do you have a good number for us to get ahold of them at? Thank you so much!'
+                text: 'Hey <altfirstname>, my name is <employeename> and I’m the Storage Manager for U-Haul in <location>. I’m reaching out because <firstname> has listed you as their emergency contact for their storage unit. We really need to get in contact with them regarding their belongings. Do you have a good number for us to get ahold of them at? Thank you so much!'
             },
             secondary: {
                 label: 'Secondary (Alternate Type)',
@@ -430,7 +522,8 @@
         const placeholders = [
             { label: '<employeename>', desc: 'Employee Name' },
             { label: '<firstname>', desc: 'Customer First Name' },
-            { label: '<altfirstname>', desc: 'Alternate Contact First Name' }
+            { label: '<altfirstname>', desc: 'Alternate Contact First Name' },
+            { label: '<location>', desc: 'U-Haul Location (e.g., East Alton)' }
         ];
 
         // Build editor UI
@@ -690,11 +783,11 @@
                     // Message keys
                     resetTemplates['stdP1'] = 'This is <employeename> from the U-Haul. I’m reaching out because I really want to help you reclaim your belongings, and you have options. The next step is your unit being listed for auction, and I REALLY don’t want that to happen. What can I do to help? Are you interested in your belongings?';
                     resetTemplates['stdP2'] = 'Hi <firstname>, this is <employeename> from U-Haul. Just checking in to see if you need anything or have questions about your storage unit.';
-                    resetTemplates['stdA1'] = 'Hey <altfirstname>, my name is <employeename> and I’m the Storage Manager for U-Haul in this area. I’m reaching out because <firstname> has listed you as their emergency contact for their storage unit. We really need to get in contact with them regarding their belongings. Do you have a good number for us to get ahold of them at? Thank you so much!';
+                    resetTemplates['stdA1'] = 'Hey <altfirstname>, my name is <employeename> and I’m the Storage Manager for U-Haul in <location>. I’m reaching out because <firstname> has listed you as their emergency contact for their storage unit. We really need to get in contact with them regarding their belongings. Do you have a good number for us to get ahold of them at? Thank you so much!';
                     resetTemplates['stdA2'] = 'Hi <altfirstname>, this is <employeename> from U-Haul. Just checking in to see if you need anything or have questions about <firstname>\'s storage unit.';
-                    resetTemplates['aucP1'] = 'Hey <firstname>, my name is <employeename> and I’m the Storage Manager for U-Haul in this area. We are desperately trying to get in contact with our customer regarding their belongings. Is this by chance your storage unit? Please let me know either way and thank you so much for your help!';
+                    resetTemplates['aucP1'] = 'Hey <firstname>, my name is <employeename> and I’m the Storage Manager for U-Haul in <location>. We are desperately trying to get in contact with our customer regarding their belongings. Is this by chance your storage unit? Please let me know either way and thank you so much for your help!';
                     resetTemplates['aucP2'] = 'Hi <firstname>, this is <employeename> from U-Haul. Just checking in to see if you need anything or have questions about your storage unit.';
-                    resetTemplates['aucA1'] = 'Hey <altfirstname>, my name is <employeename> and I’m the Storage Manager for U-Haul in this area. I’m reaching out because <firstname> has listed you as their emergency contact for their storage unit. We really need to get in contact with them regarding their belongings. Do you have a good number for us to get ahold of them at? Thank you so much!';
+                    resetTemplates['aucA1'] = 'Hey <altfirstname>, my name is <employeename> and I’m the Storage Manager for U-Haul in <location>. I’m reaching out because <firstname> has listed you as their emergency contact for their storage unit. We really need to get in contact with them regarding their belongings. Do you have a good number for us to get ahold of them at? Thank you so much!';
                     resetTemplates['aucA2'] = 'Hi <altfirstname>, this is <employeename> from U-Haul. Just checking in to see if you need anything or have questions about <firstname>\'s storage unit.';
                     saveTemplates(resetTemplates);
                     alert('All SMS message templates have been reset to default.');
@@ -1118,10 +1211,19 @@
             function fillPlaceholders(str) {
                 let altFirst = contact.name ? getFirstName(contact.name) : '';
                 let mainFirst = contact.mainName ? getFirstName(contact.mainName) : '';
+                // Load location info
+                let locationInfo = null;
+                try {
+                    locationInfo = JSON.parse(GM_getValue('wss_location_info', 'null'));
+                } catch (e) {
+                    locationInfo = null;
+                }
+                let locationName = locationInfo ? locationInfo.shortName : 'this area';
                 return str.replace(/<employeename>/g, empName)
                           .replace(/<firstname>/g, firstName)
                           .replace(/<altfirstname>/g, altFirst)
-                          .replace(/<mainfirstname>/g, mainFirst);
+                          .replace(/<mainfirstname>/g, mainFirst)
+                          .replace(/<location>/g, locationName);
             }
             // Use getTemplateKey logic for both built-in and custom ranges
             function getSelectedType() {
@@ -1249,10 +1351,19 @@
                         altFirst = '';
                     }
                 }
+                // Load location info
+                let locationInfo = null;
+                try {
+                    locationInfo = JSON.parse(GM_getValue('wss_location_info', 'null'));
+                } catch (e) {
+                    locationInfo = null;
+                }
+                let locationName = locationInfo ? locationInfo.shortName : 'this area';
                 return str.replace(/<employeename>/g, empName)
                           .replace(/<firstname>/g, mainFirst)
                           .replace(/<altfirstname>/g, altFirst)
-                          .replace(/<mainfirstname>/g, mainFirst);
+                          .replace(/<mainfirstname>/g, mainFirst)
+                          .replace(/<location>/g, locationName);
             }
             function getPopulatedMessage(contact, empName) {
                 let daysLate = contact.daysLate;
